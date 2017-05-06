@@ -10,11 +10,8 @@
 // Type `Secfile` implements following interfaces:
 //     - io.Reader
 //     - io.Writer
+//     - io.Seeker
 //     - io.Closer
-//
-// TODO: io.Seeker should be implemented as well to complete Go "io" interface
-// suite; this will probably also allow to use os.O_RDWR, if rolling key stream
-// back and forth can be implemented without too much overhead.
 
 package secfile
 
@@ -24,6 +21,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -34,8 +32,9 @@ type Secfile struct {
 }
 
 type secfile struct {
-	cipher cipher.Stream
+	key    []byte
 	nonce  []byte
+	cipher cipher.Stream
 	file   *os.File
 }
 
@@ -51,11 +50,7 @@ func Open(fname string, key []byte, fs int, ps os.FileMode) (*Secfile, error) {
 	block, _ := aes.NewCipher(key)
 	nonce := make([]byte, aes.BlockSize)
 	var c cipher.Stream
-	if fs&os.O_RDWR != 0 {
-		file.Close()
-		os.Remove(fname)
-		return nil, errors.New("RW mode is unavailable")
-	} else if fs&os.O_WRONLY != 0 {
+	if fs&os.O_WRONLY != 0 || fs&os.O_RDWR != 0 {
 		stat, err := file.Stat()
 		if err != nil {
 			return nil, err
@@ -88,7 +83,8 @@ func Open(fname string, key []byte, fs int, ps os.FileMode) (*Secfile, error) {
 		}
 		c = cipher.NewCTR(block, nonce)
 	}
-	return &Secfile{&secfile{cipher: c, nonce: nonce, file: file}}, nil
+	secfile := &secfile{key: key, nonce: nonce, cipher: c, file: file}
+	return &Secfile{secfile}, nil
 }
 
 func (cf Secfile) Write(p []byte) (n int, err error) {
@@ -107,6 +103,29 @@ func (cf Secfile) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+func (cf Secfile) Seek(offset int64, whence int) (int64, error) {
+	realOffset := offset
+	nonceLen := int64(len(cf.nonce))
+	if whence == io.SeekStart {
+		realOffset += nonceLen
+	}
+	pos, err := cf.file.Seek(realOffset, whence)
+	realPos := pos - nonceLen
+	if err != nil {
+		return realPos, err
+	}
+	// Update cipher stream according to seek type
+	block, err := aes.NewCipher(cf.key)
+	if err != nil {
+		return realPos, err
+	}
+	stream := cipher.NewCTR(block, cf.nonce)
+	stream.XORKeyStream(make([]byte, realPos), make([]byte, realPos))
+	cf.cipher = stream
+	return realPos, nil
+}
+
 func (cf Secfile) Close() {
+	cf.key, cf.nonce, cf.cipher = nil, nil, nil
 	cf.file.Close()
 }
