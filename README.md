@@ -15,8 +15,4 @@ Type `Secfile` implements following interfaces:
 - io.Reader
 - io.Writer
 - io.Closer
-
-### TODO
-`io.Seeker` should be implemented as well to complete *Go*'s `io` interface
-suite; this will probably also allow to use `os.O_RDWR`, if rolling key stream
-back and forth can be implemented without too much overhead.
+- io.Seeker
